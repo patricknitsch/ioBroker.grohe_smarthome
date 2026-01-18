@@ -1,0 +1,113 @@
+{
+	"common": {
+		"name": "grohe_smarthome",
+		"version": "0.0.1",
+		"news": {
+			"0.0.1": {
+				"en": "initial release",
+				"de": "Erstveröffentlichung",
+				"ru": "Начальная версия",
+				"pt": "lançamento inicial",
+				"nl": "Eerste uitgave",
+				"fr": "Première version",
+				"it": "Versione iniziale",
+				"es": "Versión inicial",
+				"pl": "Pierwsze wydanie",
+				"uk": "Початкова версія",
+				"zh-cn": "首次出版"
+			}
+		},
+		"titleLang": {
+			"en": "Grohe Smarthome",
+			"de": "Grohe Smarthome",
+			"ru": "Умный дом Grohe",
+			"pt": "Casa inteligente Grohe",
+			"nl": "Grohe Smarthome",
+			"fr": "Maison intelligente Grohe",
+			"it": "Grohe Smarthome",
+			"es": "Grohe Smarthome",
+			"pl": "Grohe Smarthome",
+			"uk": "Grohe Smarthome",
+			"zh-cn": "高仪智能家居"
+		},
+		"desc": {
+			"en": "Connect to Grohe Guard / Sense / Blue Systems",
+			"de": "Verbinden Sie sich mit Grohe Guard / Sense / Blue Systems",
+			"ru": "Подключение к системам Grohe Guard/Sense/Blue",
+			"pt": "Conecte-se aos sistemas Grohe Guard / Sense / Blue",
+			"nl": "Maak verbinding met Grohe Guard/Sense/Blue Systems",
+			"fr": "Connectez-vous aux systèmes Grohe Guard / Sense / Blue",
+			"it": "Connettiti ai sistemi Grohe Guard/Sense/Blue",
+			"es": "Conéctese a los sistemas Grohe Guard/Sense/Blue",
+			"pl": "Połącz się z systemami Grohe Guard / Sense / Blue",
+			"uk": "Підключіться до Grohe Guard / Sense / Blue Systems",
+			"zh-cn": "连接到 Grohe Guard / Sense / Blue 系统"
+		},
+		"authors": [
+			"patricknitsch <patricknitsch@web.de>"
+		],
+		"keywords": [
+			"grohe",
+			"iobroker",
+			"water"
+		],
+		"licenseInformation": {
+			"type": "free",
+			"license": "MIT"
+		},
+		"platform": "Javascript/Node.js",
+		"icon": "grohe_smarthome.png",
+		"enabled": true,
+		"extIcon": "https://raw.githubusercontent.com/patricknitsch/ioBroker.grohe_smarthome/main/admin/grohe_smarthome.png",
+		"readme": "https://github.com/patricknitsch/ioBroker.grohe_smarthome/blob/main/README.md",
+		"loglevel": "info",
+		"tier": 3,
+		"mode": "daemon",
+		"type": "metering",
+		"compact": true,
+		"connectionType": "cloud",
+		"dataSource": "poll",
+		"adminUI": {
+			"config": "json"
+		},
+		"dependencies": [
+			{
+				"js-controller": ">=6.0.11"
+			}
+		],
+		"globalDependencies": [
+			{
+				"admin": ">=7.0.23"
+			}
+		]
+	},
+	"native": {
+		"email": "",
+		"password": "",
+		"pollInterval": 300
+	},
+	"objects": [],
+	"instanceObjects": [
+		{
+			"_id": "info",
+			"type": "channel",
+			"common": {
+				"name": "Information"
+			},
+			"native": {}
+		},
+		{
+			"_id": "info.connection",
+			"type": "state",
+			"common": {
+				"role": "indicator.connected",
+				"name": "Device or service connected",
+				"type": "boolean",
+				"read": true,
+				"write": false,
+				"def": false
+			},
+			"native": {}
+		}
+	]
+}

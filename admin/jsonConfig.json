@@ -1,0 +1,34 @@
+{
+  "i18n": true,
+  "type": "panel",
+  "items": {
+    "email": {
+      "type": "text",
+      "label": {
+        "en": "Grohe Cloud E-Mail",
+        "de": "Grohe Cloud E-Mail"
+      },
+      "help": {
+        "en": "E-Mail address used to log in to the Grohe app",
+        "de": "E-Mail-Adresse für den Login in der Grohe App"
+      }
+    },
+    "password": {
+      "type": "password",
+      "label": {
+        "en": "Password",
+        "de": "Passwort"
+      }
+    },
+    "pollInterval": {
+      "type": "number",
+      "label": {
+        "en": "Polling interval (seconds)",
+        "de": "Polling-Intervall (Sekunden)"
+      },
+      "min": 60,
+      "max": 3600,
+      "default": 300
+    }
+  }
+}
