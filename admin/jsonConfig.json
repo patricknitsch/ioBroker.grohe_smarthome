@@ -1,22 +1,37 @@
 {
   "i18n": true,
   "type": "panel",
+  "label": "Grohe Smarthome",
   "items": {
-    "email": {
-      "type": "text",
-      "label": "Grohe E-Mail",
-      "sm": 12
-    },
-    "password": {
-      "type": "password",
-      "label": "Grohe Passwort (nur beim ersten Login nötig)",
-      "sm": 12
-    },
     "refreshToken": {
       "type": "password",
-      "label": "Refresh Token (automatisch gesetzt)",
+      "label": "Refresh Token",
+      "xs": 12,
       "sm": 12,
-      "readOnly": true
+      "md": 12,
+      "lg": 12,
+      "xl": 12
+    },
+    "_tokenHelp": {
+      "type": "sendTo",
+      "label": "🔁 Token erneuern / Anleitung öffnen",
+      "command": "tokenHelp",
+      "openUrl": true,
+      "variant": "contained",
+      "xs": 12,
+      "sm": 12,
+      "md": 12,
+      "lg": 12,
+      "xl": 12
+    },
+    "_tokenHint": {
+      "type": "staticText",
+      "text": "Hinweis: Der Refresh-Token wird einmalig aus dem Grohe-App-Login extrahiert (z.B. mit Proxy). Danach erneuert der Adapter Access Tokens automatisch. Wenn der Token ungültig ist, siehst du das im Log und in den info.*-States.",
+      "xs": 12,
+      "sm": 12,
+      "md": 12,
+      "lg": 12,
+      "xl": 12
     },
     "pollInterval": {
       "type": "number",

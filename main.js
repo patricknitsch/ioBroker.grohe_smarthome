@@ -1,82 +1,125 @@
+/* eslint-disable jsdoc/require-param */
 'use strict';
 
 /*
- * Created with @iobroker/create-adapter v3.1.2
+ * Grohe Smarthome ioBroker Adapter (Refresh Token only)
  */
 
-// The adapter-core module gives you access to the core ioBroker functions
-// you need to create an adapter
 const utils = require('@iobroker/adapter-core');
 const GroheApi = require('./lib/api');
 
-// Load your modules here, e.g.:
-// const fs = require('fs');
+function hasCode(err) {
+	return typeof err === 'object' && err !== null && 'code' in err;
+}
 
 class GroheSmarthome extends utils.Adapter {
 	/**
-	 * @param {Partial<utils.AdapterOptions>} [options] - Adapter options
+	 * @param {Partial<utils.AdapterOptions>} [options] adapter options
 	 */
 	constructor(options) {
-		super({
-			...options,
-			name: 'grohe-smarthome',
-		});
+		super({ ...options, name: 'grohe_smarthome' });
 
 		this.api = null;
+
 		this.pollTimer = null;
+
+		this.tokenInvalid = false;
 
 		this.on('ready', this.onReady.bind(this));
 		this.on('stateChange', this.onStateChange.bind(this));
+		this.on('message', this.onMessage.bind(this));
 		this.on('unload', this.onUnload.bind(this));
 	}
 
-	/* =====================================================
-	 * READY
-	 * ===================================================== */
-
+	/**
+	 * onReady
+	 */
 	async onReady() {
-		this.log.info('Grohe Adapter startet (Hybrid-Modus)');
-		this.setState('info.connection', false, true);
+		await this.setState('info.connection', { val: false, ack: true });
 
-		this.api = new GroheApi(this);
+		// Info states for token status
+		await this.ensureState('info.tokenValid', {
+			name: 'Token gültig',
+			type: 'boolean',
+			role: 'indicator.working',
+			read: true,
+			write: false,
+		});
+		await this.ensureState('info.tokenError', {
+			name: 'Token Fehler',
+			type: 'string',
+			role: 'text',
+			read: true,
+			write: false,
+		});
+
+		await this.setState('info.tokenValid', { val: false, ack: true });
+		await this.setState('info.tokenError', { val: '', ack: true });
 
 		try {
-			// 1️⃣ Refresh Token vorhanden?
-			if (this.config.refreshToken) {
-				const rt = this.decrypt(this.config.refreshToken.replace(/^enc:/, ''));
-				this.api.refreshToken = rt;
-				await this.api.refresh();
-				this.log.info('Login via Refresh Token');
-				// 2️⃣ sonst Login mit Passwort
-			} else if (this.config.email && this.config.password) {
-				const pw = this.decrypt(this.config.password.replace(/^enc:/, ''));
-				await this.api.login(this.config.email, pw);
+			this.log.info('Grohe Smarthome Adapter startet');
 
-				// Refresh Token speichern
-				await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
-					native: {
-						...this.config,
-						refreshToken: this.encrypt(this.api.refreshToken),
-					},
-				});
-
-				this.log.info('Refresh Token gespeichert');
-			} else {
-				throw new Error('Keine Anmeldedaten vorhanden');
+			if (!this.config.refreshToken) {
+				throw Object.assign(new Error('Kein Refresh Token konfiguriert'), { code: 'NO_REFRESH_TOKEN' });
 			}
 
-			this.setState('info.connection', true, true);
+			const refreshToken = this.decrypt(this.config.refreshToken.replace(/^enc:/, ''));
+
+			this.api = new GroheApi(this);
+			this.api.setRefreshToken(refreshToken);
+
+			// Initialer Token-Check
+			await this.refreshAndPersistToken();
+
+			await this.setState('info.connection', { val: true, ack: true });
+			await this.setState('info.tokenValid', { val: true, ack: true });
+			await this.setState('info.tokenError', { val: '', ack: true });
+
 			await this.pollDevices();
+
+			const interval = Math.max(60, Number(this.config.pollInterval) || 300);
+			this.pollTimer = setInterval(() => {
+				this.pollDevices().catch(err => this.log.error(err.message));
+			}, interval * 1000);
+
+			this.log.info(`Polling aktiv: alle ${interval}s`);
 		} catch (err) {
-			this.log.error(`Initialisierung fehlgeschlagen: ${err.message}`);
-			this.setState('info.connection', false, true);
+			await this.handleTokenOrInitError(err);
+		}
+	}
+
+	/**
+	 * Refresh token + persist rotated refresh_token into config (encryptedNative)
+	 */
+	async refreshAndPersistToken() {
+		if (!this.api) {
+			return;
+		}
+
+		const before = this.api.refreshToken;
+		await this.api.refresh();
+		const after = this.api.refreshToken;
+
+		// persist rotated refresh token
+		if (after && before && after !== before) {
+			await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
+				native: {
+					...this.config,
+					refreshToken: this.encrypt(after),
+				},
+			});
+			this.log.info('Refresh Token rotiert und gespeichert');
 		}
 	}
 
 	async pollDevices() {
 		if (!this.api) {
-			this.log.warn('pollDevices aufgerufen, aber API ist nicht initialisiert');
-			this.setState('info.connection', false, true);
+			this.log.warn('pollDevices: API nicht initialisiert');
+			return;
+		}
+
+		if (this.tokenInvalid) {
+			// token invalid => do not spam API
 			return;
 		}
 
@@ -86,14 +129,14 @@ class GroheSmarthome extends utils.Adapter {
 				url: 'https://api.grohe-iot.com/v1/devices',
 			});
 
-			this.setState('info.connection', true, true);
+			await this.setState('info.connection', { val: true, ack: true });
 
-			for (const dev of resp.data.devices || []) {
+			for (const dev of resp.data?.devices || []) {
 				await this.updateDevice(dev);
 			}
 		} catch (err) {
-			this.setState('info.connection', false, true);
 			this.log.error(`pollDevices fehlgeschlagen: ${err.message}`);
+			await this.setState('info.connection', { val: false, ack: true });
 		}
 	}
 
@@ -107,7 +150,7 @@ class GroheSmarthome extends utils.Adapter {
 			case 'BLUE_PRO':
 				return this.updateBlue(dev);
 			default:
-				this.log.warn(`Unbekannter Gerätetyp: ${dev.appliance_type}`);
+				this.log.debug(`Unbekannter Gerätetyp: ${dev.appliance_type}`);
 		}
 	}
 
@@ -117,12 +160,24 @@ class GroheSmarthome extends utils.Adapter {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
 
-		await this.createDevice(id, dev.name, 'Grohe Sense');
+		await this.ensureDevice(id, dev.name || 'Grohe Sense', 'SENSE');
 
-		await this.createState(id, 'temperature', 'number', 'value.temperature', d.temperature);
-		await this.createState(id, 'humidity', 'number', 'value.humidity', d.humidity);
-		await this.createState(id, 'leakDetected', 'boolean', 'indicator.alarm', d.leak_detected);
-		await this.createState(id, 'battery', 'number', 'value.battery', d.battery_level);
+		// Typical Sense values (if present)
+		await this.createNumber(id, 'temperature', 'Temperatur', 'value.temperature', d.temperature);
+		await this.createNumber(id, 'humidity', 'Luftfeuchte', 'value.humidity', d.humidity);
+		await this.createBoolean(id, 'leakDetected', 'Wasser erkannt', 'indicator.alarm', d.leak_detected);
+		await this.createNumber(id, 'battery', 'Batterie', 'value.battery', d.battery_level);
+
+		// Optional values (only if present)
+		if (d.rssi !== undefined) {
+			await this.createNumber(id, 'rssi', 'Signal (RSSI)', 'value', d.rssi);
+		}
+		if (d.firmware_version !== undefined) {
+			await this.createString(id, 'firmware', 'Firmware', 'info.firmware', String(d.firmware_version));
+		}
+		if (dev.online !== undefined) {
+			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
+		}
 	}
 
 	/* ================== SENSE GUARD ================== */
@@ -131,14 +186,25 @@ class GroheSmarthome extends utils.Adapter {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
 
-		await this.createDevice(id, dev.name, 'Grohe Sense Guard');
+		await this.ensureDevice(id, dev.name || 'Grohe Sense Guard', 'SENSE_GUARD');
 
-		await this.createState(id, 'flowRate', 'number', 'value.flow', d.flow_rate);
-		await this.createState(id, 'pressure', 'number', 'value.pressure', d.pressure);
-		await this.createState(id, 'leakDetected', 'boolean', 'indicator.alarm', d.leak_detected);
-		await this.createState(id, 'valveOpen', 'boolean', 'switch', d.valve_open);
+		await this.createNumber(id, 'flowRate', 'Durchfluss', 'value.flow', d.flow_rate);
+		await this.createNumber(id, 'pressure', 'Druck', 'value.pressure', d.pressure);
+		await this.createBoolean(id, 'leakDetected', 'Leck erkannt', 'indicator.alarm', d.leak_detected);
+		await this.createBoolean(id, 'valveOpen', 'Ventil offen', 'indicator.open', d.valve_open);
 
-		await this.createWritableState(id, 'setValve', 'boolean', 'switch');
+		if (d.temperature !== undefined) {
+			await this.createNumber(id, 'temperature', 'Temperatur', 'value.temperature', d.temperature);
+		}
+		if (d.battery_level !== undefined) {
+			await this.createNumber(id, 'battery', 'Batterie', 'value.battery', d.battery_level);
+		}
+		if (dev.online !== undefined) {
+			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
+		}
+
+		// Control
+		await this.createWritableBoolean(id, 'setValve', 'Ventil schalten', 'switch');
 	}
 
 	/* ====================== BLUE ===================== */
@@ -147,46 +213,27 @@ class GroheSmarthome extends utils.Adapter {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
 
-		await this.createDevice(id, dev.name, 'Grohe Blue');
+		await this.ensureDevice(id, dev.name || 'Grohe Blue', dev.appliance_type);
 
-		await this.createState(id, 'co2Level', 'number', 'value.percent', d.co2_level);
-		await this.createState(id, 'filterRemaining', 'number', 'value.percent', d.filter_remaining);
-		await this.createState(id, 'waterTemperature', 'number', 'value.temperature', d.temperature);
+		await this.createNumber(id, 'co2Level', 'CO₂ Füllstand', 'value.percent', d.co2_level);
+		await this.createNumber(id, 'filterRemaining', 'Filter Restlaufzeit', 'value.percent', d.filter_remaining);
+		await this.createNumber(id, 'waterTemperature', 'Wassertemperatur', 'value.temperature', d.temperature);
 
-		await this.createWritableState(id, 'dispenseWater', 'string', 'control');
-	}
-
-	/* =================== HELPERS ===================== */
-
-	async createDevice(id, name, type) {
-		await this.setObjectNotExistsAsync(id, {
-			type: 'device',
-			common: { name: `${name} (${type})` },
-			native: {},
-		});
-	}
-
-	async createState(deviceId, name, type, role, value) {
-		const path = `${deviceId}.${name}`;
-		await this.setObjectNotExistsAsync(path, {
-			type: 'state',
-			common: { name, type, role, read: true, write: false },
-			native: {},
-		});
-		if (value !== undefined) {
-			this.setState(path, { val: value, ack: true });
+		if (d.error_code !== undefined) {
+			await this.createNumber(id, 'errorCode', 'Fehlercode', 'value', d.error_code);
 		}
+		if (d.firmware_version !== undefined) {
+			await this.createString(id, 'firmware', 'Firmware', 'info.firmware', String(d.firmware_version));
+		}
+		if (dev.online !== undefined) {
+			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
+		}
+
+		// Control: "type:amountMl" (e.g. "2:250")
+		await this.createWritableString(id, 'dispenseWater', 'Wasser zapfen (type:ml)', 'control');
 	}
 
-	async createWritableState(deviceId, name, type, role) {
-		await this.setObjectNotExistsAsync(`${deviceId}.${name}`, {
-			type: 'state',
-			common: { name, type, role, read: true, write: true },
-			native: {},
-		});
-	}
-
-	/* ================== ACTIONS ====================== */
+	/* =================== ACTIONS ====================== */
 
 	async onStateChange(id, state) {
 		if (!state || state.ack) {
@@ -195,6 +242,10 @@ class GroheSmarthome extends utils.Adapter {
 
 		if (!this.api) {
 			this.log.warn(`API nicht initialisiert – Aktion ignoriert (${id})`);
+			return;
+		}
+		if (this.tokenInvalid) {
+			this.log.warn(`Token ungültig – Aktion ignoriert (${id})`);
 			return;
 		}
 
@@ -206,10 +257,15 @@ class GroheSmarthome extends utils.Adapter {
 					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/valve`,
 					data: { open: state.val },
 				});
-				this.setState(id, { ack: true });
-			} else if (id.endsWith('.dispenseWater')) {
+
+				await this.setState(id, { ack: true });
+				return;
+			}
+
+			if (id.endsWith('.dispenseWater')) {
 				const deviceId = id.split('.').slice(-2, -1)[0];
-				const [type, amount] = state.val.split(':');
+				const [type, amount] = String(state.val).split(':');
+
 				await this.api.request({
 					method: 'POST',
 					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/dispense`,
@@ -218,19 +274,122 @@ class GroheSmarthome extends utils.Adapter {
 						amountMl: Number(amount),
 					},
 				});
-				this.setState(id, { ack: true });
+
+				await this.setState(id, { ack: true });
+				return;
 			}
+
+			this.log.debug(`Unhandled stateChange: ${id}`);
 		} catch (err) {
-			this.log.error(`Aktion fehlgeschlagen für ${id}: ${err.message}`);
+			this.log.error(`Aktion fehlgeschlagen (${id}): ${err.message}`);
 		}
 	}
 
-	/* =====================================================
-	 * UNLOAD
-	 * ===================================================== */
+	/* =================== ADMIN MESSAGE ===================== */
+
+	onMessage(obj) {
+		if (!obj || !obj.command) {
+			return;
+		}
+
+		if (obj.command === 'tokenHelp') {
+			// TODO: change to your repo / docs
+			const url = 'https://github.com/DEIN_GITHUB_USER/DEIN_REPO#token-beschaffen';
+
+			if (obj.callback) {
+				this.sendTo(obj.from, obj.command, { openUrl: url, window: '_blank' }, obj.callback);
+			}
+		}
+	}
+
+	/* =================== OBJECT HELPERS ===================== */
+
+	async ensureDevice(id, name, type) {
+		const obj = await this.getObjectAsync(id);
+		if (!obj) {
+			await this.setObjectAsync(id, {
+				type: 'device',
+				common: { name: `${name} (${type})` },
+				native: { type },
+			});
+		}
+	}
+
+	async ensureState(id, common) {
+		const obj = await this.getObjectAsync(id);
+		if (!obj) {
+			await this.setObjectAsync(id, {
+				type: 'state',
+				common,
+				native: {},
+			});
+		}
+	}
+
+	/**
+	 * Create / update number state
+	 */
+	async createNumber(devId, name, label, role, value) {
+		const id = `${devId}.${name}`;
+		await this.ensureState(id, { name: label, type: 'number', role, read: true, write: false });
+		if (value !== undefined) {
+			await this.setState(id, { val: value, ack: true });
+		}
+	}
+
+	async createBoolean(devId, name, label, role, value) {
+		const id = `${devId}.${name}`;
+		await this.ensureState(id, { name: label, type: 'boolean', role, read: true, write: false });
+		if (value !== undefined) {
+			await this.setState(id, { val: value, ack: true });
+		}
+	}
+
+	async createString(devId, name, label, role, value) {
+		const id = `${devId}.${name}`;
+		await this.ensureState(id, { name: label, type: 'string', role, read: true, write: false });
+		if (value !== undefined) {
+			await this.setState(id, { val: value, ack: true });
+		}
+	}
+
+	async createWritableBoolean(devId, name, label, role) {
+		const id = `${devId}.${name}`;
+		await this.ensureState(id, { name: label, type: 'boolean', role, read: true, write: true });
+	}
+
+	async createWritableString(devId, name, label, role) {
+		const id = `${devId}.${name}`;
+		await this.ensureState(id, { name: label, type: 'string', role, read: true, write: true });
+	}
+
+	/* =================== ERROR HANDLING ===================== */
+
+	async handleTokenOrInitError(err) {
+		const code =
+			hasCode(err) && typeof err.code === 'string' ? err.code : err instanceof Error ? err.message : String(err);
+
+		await this.setState('info.connection', { val: false, ack: true });
+		await this.setState('info.tokenValid', { val: false, ack: true });
+		await this.setState('info.tokenError', { val: String(code), ack: true });
+
+		if (String(code) === 'INVALID_REFRESH_TOKEN') {
+			this.tokenInvalid = true;
+
+			this.log.error('Refresh Token ungültig/abgelaufen. Bitte Token neu setzen (Admin → Token erneuern).');
+
+			// stop polling to avoid request spam
+			if (this.pollTimer) {
+				clearInterval(this.pollTimer);
+				this.pollTimer = null;
+			}
+			return;
+		}
+
+		this.log.error(`Initialisierung fehlgeschlagen: ${String(code)}`);
+	}
 
 	onUnload(callback) {
-		this.log.info('onUnload: Adapter wird gestoppt');
 		try {
 			if (this.pollTimer) {
 				clearInterval(this.pollTimer);
@@ -238,19 +397,15 @@ class GroheSmarthome extends utils.Adapter {
 			}
 			this.api = null;
 			callback();
-		} catch (e) {
-			this.log.error(`onUnload: Fehler beim Stoppen: ${e.message}`);
+		} catch {
 			callback();
 		}
 	}
 }
 
-/* =====================================================
- * START
- * ===================================================== */
-
+// ioBroker adapter entry
 if (require.main !== module) {
 	module.exports = options => new GroheSmarthome(options);
 } else {
-	(() => new GroheSmarthome())();
+	new GroheSmarthome();
 }
