@@ -55,10 +55,10 @@
 			"license": "MIT"
 		},
 		"platform": "Javascript/Node.js",
-		"icon": "grohe_smarthome.png",
+		"icon": "grohe-smarthome.png",
 		"enabled": true,
-		"extIcon": "https://raw.githubusercontent.com/patricknitsch/ioBroker.grohe_smarthome/main/admin/grohe_smarthome.png",
-		"readme": "https://github.com/patricknitsch/ioBroker.grohe_smarthome/blob/main/README.md",
+		"extIcon": "https://raw.githubusercontent.com/patricknitsch/ioBroker.grohe-smarthome/main/admin/grohe_smarthome.png",
+		"readme": "https://github.com/patricknitsch/ioBroker.grohe-smarthome/blob/main/README.md",
 		"loglevel": "info",
 		"tier": 3,
 		"mode": "daemon",
