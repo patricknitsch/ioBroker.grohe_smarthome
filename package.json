@@ -62,7 +62,7 @@
     "dev-server": "dev-server"
   },
   "bugs": {
-    "url": "https://github.com/patricknitsch/ioBroker.grohe_smarthome/issues"
+    "url": "https://github.com/patricknitsch/ioBroker.grohe-smarthome/issues"
   },
   "readmeFilename": "README.md"
 }
