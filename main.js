@@ -63,7 +63,7 @@ class GroheSmarthome extends utils.Adapter {
 				throw Object.assign(new Error('Kein Refresh Token konfiguriert'), { code: 'NO_REFRESH_TOKEN' });
 			}
 
-			const refreshToken = this.config.refreshToken; // bereits Klartext
+			const refreshToken = String(this.config.refreshToken).trim();
 
 			this.api = new GroheApi(this);
 			this.api.setRefreshToken(refreshToken);
