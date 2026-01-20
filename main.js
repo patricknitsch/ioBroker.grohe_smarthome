@@ -63,7 +63,7 @@ class GroheSmarthome extends utils.Adapter {
 				throw Object.assign(new Error('Kein Refresh Token konfiguriert'), { code: 'NO_REFRESH_TOKEN' });
 			}
 
-			const refreshToken = this.decrypt(this.config.refreshToken.replace(/^enc:/, ''));
+			const refreshToken = this.config.refreshToken; // bereits Klartext
 
 			this.api = new GroheApi(this);
 			this.api.setRefreshToken(refreshToken);
@@ -105,7 +105,7 @@ class GroheSmarthome extends utils.Adapter {
 			await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
 				native: {
 					...this.config,
-					refreshToken: this.encrypt(after),
+					refreshToken: after,
 				},
 			});
 			this.log.info('Refresh Token rotiert und gespeichert');

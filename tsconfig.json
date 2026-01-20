@@ -6,6 +6,8 @@
 	"compilerOptions": {
 		// do not compile anything, this file is just to configure type checking
 		"noEmit": true,
+		"esModuleInterop": true,
+    	"allowSyntheticDefaultImports": true,
 
 		// check JS files
 		"allowJs": true,
