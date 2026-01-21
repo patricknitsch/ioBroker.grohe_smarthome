@@ -426,9 +426,21 @@ class GroheSmarthome extends utils.Adapter {
 	}
 
 	async handleInitError(err) {
-		const code =
-			hasCode(err) && typeof err.code === 'string' ? err.code : err instanceof Error ? err.message : String(err);
-
+		const code = (() => {
+			const e = err;
+			const axiosStatus = e?.response?.status;
+			const axiosBody = e?.response?.data;
+			if (axiosStatus) {
+				return `HTTP_${axiosStatus}: ${typeof axiosBody === 'string' ? axiosBody : JSON.stringify(axiosBody)}`;
+			}
+			if (hasCode(e) && typeof e.code === 'string') {
+				return e.code;
+			}
+			if (e instanceof Error) {
+				return e.message;
+			}
+			return String(e);
+		})();
 		await this.setState('info.connection', { val: false, ack: true });
 		await this.setState('info.tokenValid', { val: false, ack: true });
 		await this.setState('info.tokenError', { val: String(code), ack: true });
