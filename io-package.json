@@ -81,12 +81,14 @@
 		]
 	},
 	"native": {
+		"email": "",
+		"password": "",
+		"keepPassword": false,
+		"debugLogin": false,
 		"refreshToken": "",
 		"pollInterval": 300
 	},
-	"encryptedNative": [
-		"refreshToken"
-	],
+	"encryptedNative": ["email", "password", "refreshToken"],
 	"objects": [],
 	"instanceObjects": [
 		{

@@ -1,42 +1,59 @@
 {
   "i18n": true,
-  "type": "panel",
-  "label": "Grohe Smarthome",
   "items": {
+    "email": {
+      "type": "text",
+      "label": { "de": "Grohe E-Mail", "en": "Grohe email" },
+      "xs": 12,
+      "sm": 12,
+      "md": 6,
+      "lg": 6,
+      "xl": 6
+    },
+    "password": {
+      "type": "password",
+      "label": { "de": "Grohe Passwort (für automatischen Login)", "en": "Grohe password (auto login)" },
+      "xs": 12,
+      "sm": 12,
+      "md": 6,
+      "lg": 6,
+      "xl": 6
+    },
+    "keepPassword": {
+      "type": "checkbox",
+      "label": { "de": "Passwort nach erfolgreichem Login behalten", "en": "Keep password after successful login" },
+      "default": false,
+      "xs": 12,
+      "sm": 12,
+      "md": 6,
+      "lg": 6,
+      "xl": 6
+    },
     "refreshToken": {
       "type": "password",
-      "label": "Refresh Token",
+      "label": { "de": "Refresh Token (wird automatisch gesetzt)", "en": "Refresh token (set automatically)" },
+      "readOnly": true,
       "xs": 12,
       "sm": 12,
       "md": 12,
       "lg": 12,
       "xl": 12
     },
-    "_tokenHelp": {
-      "type": "sendTo",
-      "label": "🔁 Token erneuern / Anleitung öffnen",
-      "command": "tokenHelp",
-      "openUrl": true,
-      "variant": "contained",
+    "debugLogin": {
+      "type": "checkbox",
+      "label": { "de": "Login Debug-Logging aktivieren", "en": "Enable login debug logging" },
+      "default": false,
       "xs": 12,
       "sm": 12,
-      "md": 12,
-      "lg": 12,
-      "xl": 12
-    },
-    "_tokenHint": {
-      "type": "staticText",
-      "text": "Hinweis: Der Refresh-Token wird einmalig aus dem Grohe-App-Login extrahiert (z.B. mit Proxy). Danach erneuert der Adapter Access Tokens automatisch. Wenn der Token ungültig ist, siehst du das im Log und in den info.*-States.",
-      "xs": 12,
-      "sm": 12,
-      "md": 12,
-      "lg": 12,
-      "xl": 12
+      "md": 6,
+      "lg": 6,
+      "xl": 6
     },
     "pollInterval": {
       "type": "number",
-      "label": "Abfrageintervall (Sekunden)",
+      "label": { "de": "Abfrageintervall (Sekunden)", "en": "Polling interval (seconds)" },
       "min": 60,
+      "default": 300,
       "xs": 12,
       "sm": 6,
       "md": 4,

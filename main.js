@@ -1,43 +1,42 @@
-/* eslint-disable jsdoc/require-param */
 'use strict';
-
-/*
- * Grohe Smarthome ioBroker Adapter (Refresh Token only)
- */
 
 const utils = require('@iobroker/adapter-core');
 const GroheApi = require('./lib/api');
+const GroheLogin = require('./lib/login');
 
+/**
+ * @typedef {Error & { code?: string }} ErrorWithCode
+ */
+
+/**
+ * @param {unknown} err
+ * @returns {err is ErrorWithCode}
+ */
 function hasCode(err) {
 	return typeof err === 'object' && err !== null && 'code' in err;
 }
 
 class GroheSmarthome extends utils.Adapter {
 	/**
-	 * @param {Partial<utils.AdapterOptions>} [options] adapter options
+	 * @param {Partial<utils.AdapterOptions>} [options]
 	 */
 	constructor(options) {
 		super({ ...options, name: 'grohe-smarthome' });
 
+		/** @type {GroheApi|null} */
 		this.api = null;
 
+		/** @type {NodeJS.Timeout|null} */
 		this.pollTimer = null;
-
-		this.tokenInvalid = false;
 
 		this.on('ready', this.onReady.bind(this));
 		this.on('stateChange', this.onStateChange.bind(this));
-		this.on('message', this.onMessage.bind(this));
 		this.on('unload', this.onUnload.bind(this));
 	}
 
-	/**
-	 * onReady
-	 */
 	async onReady() {
 		await this.setState('info.connection', { val: false, ack: true });
 
-		// Info states for token status
 		await this.ensureState('info.tokenValid', {
 			name: 'Token gültig',
 			type: 'boolean',
@@ -52,74 +51,97 @@ class GroheSmarthome extends utils.Adapter {
 			read: true,
 			write: false,
 		});
+		await this.ensureState('info.loginStep', {
+			name: 'Login Schritt',
+			type: 'string',
+			role: 'text',
+			read: true,
+			write: false,
+		});
 
 		await this.setState('info.tokenValid', { val: false, ack: true });
 		await this.setState('info.tokenError', { val: '', ack: true });
+		await this.setState('info.loginStep', { val: '', ack: true });
 
 		try {
-			this.log.info('Grohe Smarthome Adapter startet');
+			this.api = new GroheApi(this);
 
-			if (!this.config.refreshToken) {
-				throw Object.assign(new Error('Kein Refresh Token konfiguriert'), { code: 'NO_REFRESH_TOKEN' });
+			// encryptedNative -> config values are plaintext here
+			const email = (this.config.email || '').trim();
+			const password = this.config.password || '';
+			const savedRefresh = String(this.config.refreshToken || '').replace(/\s+/g, '');
+			const debugLogin = !!this.config.debugLogin;
+
+			// Step 1: try refresh token if present
+			if (savedRefresh) {
+				await this.setState('info.loginStep', { val: 'refresh_with_saved_token', ack: true });
+				this.api.setRefreshToken(savedRefresh);
+
+				try {
+					const { refreshToken } = await this.api.refresh();
+					await this.persistRefreshTokenIfChanged(refreshToken);
+					await this.setState('info.tokenValid', { val: true, ack: true });
+					await this.setState('info.tokenError', { val: '', ack: true });
+				} catch (e) {
+					this.log.warn(`Refresh mit gespeichertem Token fehlgeschlagen, versuche Web-Login: ${e.message}`);
+				}
 			}
 
-			const refreshToken = String(this.config.refreshToken || '').replace(/\s+/g, '');
+			// Step 2: full web login
+			if (!this.api.accessToken) {
+				if (!email || !password) {
+					throw new Error(
+						'Bitte E-Mail/Passwort in den Adapter-Einstellungen setzen (für automatischen Login).',
+					);
+				}
 
-			this.api = new GroheApi(this);
-			this.api.setRefreshToken(refreshToken);
+				await this.setState('info.loginStep', { val: 'web_login_start', ack: true });
+				const login = new GroheLogin(this, { debug: debugLogin });
 
-			// Initialer Token-Check
-			await this.refreshAndPersistToken();
+				const tokens = await login.login(email, password);
 
+				await this.setState('info.loginStep', { val: 'web_login_tokens_received', ack: true });
+
+				this.api.setAccessToken(tokens.access_token);
+				this.api.setRefreshToken(tokens.refresh_token);
+
+				await this.persistRefreshTokenIfChanged(tokens.refresh_token);
+
+				// Option: clear password after success (safer)
+				if (!this.config.keepPassword) {
+					await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
+						native: {
+							...this.config,
+							password: '',
+						},
+					});
+					this.log.info(
+						'Passwort wurde nach erfolgreichem Login aus der Config entfernt (keepPassword=false).',
+					);
+				}
+
+				await this.setState('info.tokenValid', { val: true, ack: true });
+				await this.setState('info.tokenError', { val: '', ack: true });
+			}
+
+			await this.setState('info.loginStep', { val: 'ready', ack: true });
 			await this.setState('info.connection', { val: true, ack: true });
-			await this.setState('info.tokenValid', { val: true, ack: true });
-			await this.setState('info.tokenError', { val: '', ack: true });
 
 			await this.pollDevices();
-
 			const interval = Math.max(60, Number(this.config.pollInterval) || 300);
+
 			this.pollTimer = setInterval(() => {
 				this.pollDevices().catch(err => this.log.error(err.message));
 			}, interval * 1000);
 
 			this.log.info(`Polling aktiv: alle ${interval}s`);
 		} catch (err) {
-			await this.handleTokenOrInitError(err);
-		}
-	}
-
-	/**
-	 * Refresh token + persist rotated refresh_token into config (encryptedNative)
-	 */
-	async refreshAndPersistToken() {
-		if (!this.api) {
-			return;
-		}
-
-		const before = this.api.refreshToken;
-		await this.api.refresh();
-		const after = this.api.refreshToken;
-
-		// persist rotated refresh token
-		if (after && before && after !== before) {
-			await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
-				native: {
-					...this.config,
-					refreshToken: after,
-				},
-			});
-			this.log.info('Refresh Token rotiert und gespeichert');
+			await this.handleInitError(err);
 		}
 	}
 
 	async pollDevices() {
 		if (!this.api) {
-			this.log.warn('pollDevices: API nicht initialisiert');
-			return;
-		}
-
-		if (this.tokenInvalid) {
-			// token invalid => do not spam API
 			return;
 		}
 
@@ -135,12 +157,41 @@ class GroheSmarthome extends utils.Adapter {
 				await this.updateDevice(dev);
 			}
 		} catch (err) {
-			this.log.error(`pollDevices fehlgeschlagen: ${err.message}`);
 			await this.setState('info.connection', { val: false, ack: true });
+			this.log.error(`pollDevices fehlgeschlagen: ${err.message}`);
 		}
 	}
 
+	async persistRefreshTokenIfChanged(newToken) {
+		const nt = String(newToken || '').replace(/\s+/g, '');
+		if (!nt) {
+			return;
+		}
+
+		const current = String(this.config.refreshToken || '').replace(/\s+/g, '');
+		if (current === nt) {
+			return;
+		}
+
+		await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
+			native: {
+				...this.config,
+				refreshToken: nt,
+			},
+		});
+
+		this.log.info('Refresh Token gespeichert/aktualisiert');
+	}
+
+	/* ===================== Device mapping ===================== */
+
 	async updateDevice(dev) {
+		const id = dev.appliance_id || dev.id || dev.device_id;
+		if (!id) {
+			this.log.debug('Device ohne appliance_id erhalten – übersprungen');
+			return;
+		}
+
 		switch (dev.appliance_type) {
 			case 'SENSE':
 				return this.updateSense(dev);
@@ -150,42 +201,31 @@ class GroheSmarthome extends utils.Adapter {
 			case 'BLUE_PRO':
 				return this.updateBlue(dev);
 			default:
+				await this.ensureDevice(id, dev.name || 'Grohe Device', dev.appliance_type || 'UNKNOWN');
+				await this.writeRawLatest(id, dev.data_latest || {});
 				this.log.debug(`Unbekannter Gerätetyp: ${dev.appliance_type}`);
 		}
 	}
 
-	/* ===================== SENSE ===================== */
-
 	async updateSense(dev) {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
-
 		await this.ensureDevice(id, dev.name || 'Grohe Sense', 'SENSE');
 
-		// Typical Sense values (if present)
 		await this.createNumber(id, 'temperature', 'Temperatur', 'value.temperature', d.temperature);
 		await this.createNumber(id, 'humidity', 'Luftfeuchte', 'value.humidity', d.humidity);
 		await this.createBoolean(id, 'leakDetected', 'Wasser erkannt', 'indicator.alarm', d.leak_detected);
 		await this.createNumber(id, 'battery', 'Batterie', 'value.battery', d.battery_level);
 
-		// Optional values (only if present)
-		if (d.rssi !== undefined) {
-			await this.createNumber(id, 'rssi', 'Signal (RSSI)', 'value', d.rssi);
-		}
-		if (d.firmware_version !== undefined) {
-			await this.createString(id, 'firmware', 'Firmware', 'info.firmware', String(d.firmware_version));
-		}
-		if (dev.online !== undefined) {
-			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
-		}
-	}
+		await this.createNumber(id, 'signal', 'Signal', 'value.signal', d.signal_strength);
+		await this.createNumber(id, 'rssi', 'RSSI', 'value.signal', d.rssi);
 
-	/* ================== SENSE GUARD ================== */
+		await this.writeRawLatest(id, d);
+	}
 
 	async updateSenseGuard(dev) {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
-
 		await this.ensureDevice(id, dev.name || 'Grohe Sense Guard', 'SENSE_GUARD');
 
 		await this.createNumber(id, 'flowRate', 'Durchfluss', 'value.flow', d.flow_rate);
@@ -193,121 +233,125 @@ class GroheSmarthome extends utils.Adapter {
 		await this.createBoolean(id, 'leakDetected', 'Leck erkannt', 'indicator.alarm', d.leak_detected);
 		await this.createBoolean(id, 'valveOpen', 'Ventil offen', 'indicator.open', d.valve_open);
 
-		if (d.temperature !== undefined) {
-			await this.createNumber(id, 'temperature', 'Temperatur', 'value.temperature', d.temperature);
-		}
-		if (d.battery_level !== undefined) {
-			await this.createNumber(id, 'battery', 'Batterie', 'value.battery', d.battery_level);
-		}
-		if (dev.online !== undefined) {
-			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
-		}
+		// Backwards-compatible switch (optional)
+		await this.createWritableBoolean(id, 'setValve', 'Ventil (Switch)', 'switch');
 
-		// Control
-		await this.createWritableBoolean(id, 'setValve', 'Ventil schalten', 'switch');
+		// NEW: explicit open/close buttons
+		await this.ensureChannel(`${id}.controls`, 'Controls');
+		await this.createWritableBoolean(`${id}.controls`, 'valveOpen', 'Ventil öffnen', 'button');
+		await this.createWritableBoolean(`${id}.controls`, 'valveClose', 'Ventil schließen', 'button');
+
+		await this.writeRawLatest(id, d);
 	}
-
-	/* ====================== BLUE ===================== */
 
 	async updateBlue(dev) {
 		const id = dev.appliance_id;
 		const d = dev.data_latest || {};
-
 		await this.ensureDevice(id, dev.name || 'Grohe Blue', dev.appliance_type);
 
 		await this.createNumber(id, 'co2Level', 'CO₂ Füllstand', 'value.percent', d.co2_level);
 		await this.createNumber(id, 'filterRemaining', 'Filter Restlaufzeit', 'value.percent', d.filter_remaining);
 		await this.createNumber(id, 'waterTemperature', 'Wassertemperatur', 'value.temperature', d.temperature);
 
-		if (d.error_code !== undefined) {
-			await this.createNumber(id, 'errorCode', 'Fehlercode', 'value', d.error_code);
-		}
-		if (d.firmware_version !== undefined) {
-			await this.createString(id, 'firmware', 'Firmware', 'info.firmware', String(d.firmware_version));
-		}
-		if (dev.online !== undefined) {
-			await this.createBoolean(id, 'online', 'Online', 'indicator.connected', !!dev.online);
-		}
+		await this.ensureChannel(`${id}.controls`, 'Controls');
+		await this.createNumber(`${id}.controls`, 'dispenseType', 'Zapf-Typ (int)', 'level', 0, true);
+		await this.createNumber(`${id}.controls`, 'dispenseAmountMl', 'Menge (ml)', 'level', 250, true);
+		await this.createWritableBoolean(`${id}.controls`, 'dispenseTrigger', 'Zapfen auslösen', 'button');
 
-		// Control: "type:amountMl" (e.g. "2:250")
-		await this.createWritableString(id, 'dispenseWater', 'Wasser zapfen (type:ml)', 'control');
+		await this.writeRawLatest(id, d);
 	}
 
-	/* =================== ACTIONS ====================== */
+	/* ===================== Writes ===================== */
 
 	async onStateChange(id, state) {
-		if (!state || state.ack) {
-			return;
-		}
-
-		if (!this.api) {
-			this.log.warn(`API nicht initialisiert – Aktion ignoriert (${id})`);
-			return;
-		}
-		if (this.tokenInvalid) {
-			this.log.warn(`Token ungültig – Aktion ignoriert (${id})`);
+		if (!state || state.ack || !this.api) {
 			return;
 		}
 
 		try {
+			// Sense Guard: legacy switch
 			if (id.endsWith('.setValve')) {
 				const deviceId = id.split('.').slice(-2, -1)[0];
 				await this.api.request({
 					method: 'POST',
 					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/valve`,
-					data: { open: state.val },
+					data: { open: !!state.val },
 				});
-
 				await this.setState(id, { ack: true });
 				return;
 			}
 
-			if (id.endsWith('.dispenseWater')) {
-				const deviceId = id.split('.').slice(-2, -1)[0];
-				const [type, amount] = String(state.val).split(':');
+			// Sense Guard: open button
+			if (id.endsWith('.controls.valveOpen')) {
+				if (!state.val) {
+					await this.setState(id, { ack: true });
+					return;
+				}
+				const parts = id.split('.');
+				const deviceId = parts[parts.length - 3];
+				await this.api.request({
+					method: 'POST',
+					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/valve`,
+					data: { open: true },
+				});
+				// reset button
+				await this.setState(id, { val: false, ack: true });
+				return;
+			}
+
+			// Sense Guard: close button
+			if (id.endsWith('.controls.valveClose')) {
+				if (!state.val) {
+					await this.setState(id, { ack: true });
+					return;
+				}
+				const parts = id.split('.');
+				const deviceId = parts[parts.length - 3];
+				await this.api.request({
+					method: 'POST',
+					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/valve`,
+					data: { open: false },
+				});
+				// reset button
+				await this.setState(id, { val: false, ack: true });
+				return;
+			}
+
+			// Blue: dispense trigger button
+			if (id.endsWith('.controls.dispenseTrigger')) {
+				if (!state.val) {
+					await this.setState(id, { ack: true });
+					return;
+				}
+				const parts = id.split('.');
+				const deviceId = parts[parts.length - 3];
+
+				const typeState = await this.getStateAsync(`${deviceId}.controls.dispenseType`);
+				const mlState = await this.getStateAsync(`${deviceId}.controls.dispenseAmountMl`);
+
+				const type = Number(typeState?.val ?? 0);
+				const amountMl = Number(mlState?.val ?? 250);
 
 				await this.api.request({
 					method: 'POST',
 					url: `https://api.grohe-iot.com/v1/devices/${deviceId}/actions/dispense`,
-					data: {
-						type: Number(type),
-						amountMl: Number(amount),
-					},
+					data: { type, amountMl },
 				});
 
-				await this.setState(id, { ack: true });
+				await this.setState(id, { val: false, ack: true });
 				return;
 			}
-
-			this.log.debug(`Unhandled stateChange: ${id}`);
 		} catch (err) {
 			this.log.error(`Aktion fehlgeschlagen (${id}): ${err.message}`);
 		}
 	}
 
-	/* =================== ADMIN MESSAGE ===================== */
-
-	onMessage(obj) {
-		if (!obj || !obj.command) {
-			return;
-		}
-
-		if (obj.command === 'tokenHelp') {
-			// TODO: change to your repo / docs
-			const url = 'https://github.com/DEIN_GITHUB_USER/DEIN_REPO#token-beschaffen';
-
-			if (obj.callback) {
-				this.sendTo(obj.from, obj.command, { openUrl: url, window: '_blank' }, obj.callback);
-			}
-		}
-	}
-
-	/* =================== OBJECT HELPERS ===================== */
+	/* ===================== Object helpers (no deprecated create*) ===================== */
 
 	async ensureDevice(id, name, type) {
 		const obj = await this.getObjectAsync(id);
 		if (!obj) {
-			await this.setObjectAsync(id, {
+			await this.setObject(id, {
 				type: 'device',
 				common: { name: `${name} (${type})` },
 				native: { type },
@@ -315,76 +359,80 @@ class GroheSmarthome extends utils.Adapter {
 		}
 	}
 
-	async ensureState(id, common) {
+	async ensureChannel(id, name) {
 		const obj = await this.getObjectAsync(id);
 		if (!obj) {
-			await this.setObjectAsync(id, {
-				type: 'state',
-				common,
+			await this.setObject(id, {
+				type: 'channel',
+				common: { name },
 				native: {},
 			});
 		}
 	}
 
-	/**
-	 * Create / update number state
-	 */
-	async createNumber(devId, name, label, role, value) {
-		const id = `${devId}.${name}`;
-		await this.ensureState(id, { name: label, type: 'number', role, read: true, write: false });
+	async ensureState(id, common) {
+		const obj = await this.getObjectAsync(id);
+		if (!obj) {
+			await this.setObject(id, { type: 'state', common, native: {} });
+		}
+	}
+
+	async createNumber(devId, name, label, role, value, writable = false) {
+		const sid = `${devId}.${name}`;
+		await this.ensureState(sid, { name: label, type: 'number', role, read: true, write: !!writable });
 		if (value !== undefined) {
-			await this.setState(id, { val: value, ack: true });
+			await this.setState(sid, { val: value, ack: true });
 		}
 	}
 
 	async createBoolean(devId, name, label, role, value) {
-		const id = `${devId}.${name}`;
-		await this.ensureState(id, { name: label, type: 'boolean', role, read: true, write: false });
+		const sid = `${devId}.${name}`;
+		await this.ensureState(sid, { name: label, type: 'boolean', role, read: true, write: false });
 		if (value !== undefined) {
-			await this.setState(id, { val: value, ack: true });
-		}
-	}
-
-	async createString(devId, name, label, role, value) {
-		const id = `${devId}.${name}`;
-		await this.ensureState(id, { name: label, type: 'string', role, read: true, write: false });
-		if (value !== undefined) {
-			await this.setState(id, { val: value, ack: true });
+			await this.setState(sid, { val: !!value, ack: true });
 		}
 	}
 
 	async createWritableBoolean(devId, name, label, role) {
-		const id = `${devId}.${name}`;
-		await this.ensureState(id, { name: label, type: 'boolean', role, read: true, write: true });
+		const sid = `${devId}.${name}`;
+		await this.ensureState(sid, { name: label, type: 'boolean', role, read: true, write: true });
 	}
 
-	async createWritableString(devId, name, label, role) {
-		const id = `${devId}.${name}`;
-		await this.ensureState(id, { name: label, type: 'string', role, read: true, write: true });
+	async writeRawLatest(devId, dataLatest) {
+		if (!dataLatest || typeof dataLatest !== 'object') {
+			return;
+		}
+
+		await this.ensureChannel(`${devId}.raw`, 'Raw');
+
+		for (const [k, v] of Object.entries(dataLatest)) {
+			if (v === null || v === undefined) {
+				continue;
+			}
+
+			const t = typeof v;
+			if (t === 'number') {
+				await this.createNumber(`${devId}.raw`, k, k, 'value', v, false);
+			} else if (t === 'boolean') {
+				const sid = `${devId}.raw.${k}`;
+				await this.ensureState(sid, { name: k, type: 'boolean', role: 'indicator', read: true, write: false });
+				await this.setState(sid, { val: !!v, ack: true });
+			} else if (t === 'string') {
+				const sid = `${devId}.raw.${k}`;
+				await this.ensureState(sid, { name: k, type: 'string', role: 'text', read: true, write: false });
+				await this.setState(sid, { val: v, ack: true });
+			}
+		}
 	}
 
-	/* =================== ERROR HANDLING ===================== */
-
-	async handleTokenOrInitError(err) {
+	async handleInitError(err) {
 		const code =
 			hasCode(err) && typeof err.code === 'string' ? err.code : err instanceof Error ? err.message : String(err);
 
 		await this.setState('info.connection', { val: false, ack: true });
 		await this.setState('info.tokenValid', { val: false, ack: true });
 		await this.setState('info.tokenError', { val: String(code), ack: true });
-
-		if (String(code) === 'INVALID_REFRESH_TOKEN') {
-			this.tokenInvalid = true;
-
-			this.log.error('Refresh Token ungültig/abgelaufen. Bitte Token neu setzen (Admin → Token erneuern).');
-
-			// stop polling to avoid request spam
-			if (this.pollTimer) {
-				clearInterval(this.pollTimer);
-				this.pollTimer = null;
-			}
-			return;
-		}
+		await this.setState('info.loginStep', { val: 'error', ack: true });
 
 		this.log.error(`Initialisierung fehlgeschlagen: ${String(code)}`);
 	}
@@ -393,7 +441,6 @@ class GroheSmarthome extends utils.Adapter {
 		try {
 			if (this.pollTimer) {
 				clearInterval(this.pollTimer);
-				this.pollTimer = null;
 			}
 			this.api = null;
 			callback();
@@ -403,7 +450,6 @@ class GroheSmarthome extends utils.Adapter {
 	}
 }
 
-// ioBroker adapter entry
 if (require.main !== module) {
 	module.exports = options => new GroheSmarthome(options);
 } else {
